@@ -8,27 +8,32 @@ on:
       - '.github/workflows/shealth-probe.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Generate ephemeral build key and wait for encrypted payload
+      - name: Generate ephemeral key and publish public half
         shell: bash
         run: |
           set -euo pipefail
-          echo "JAVA_HOME_17_X64=${JAVA_HOME_17_X64:-}"
-          java -version
           openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -out /tmp/private.pem >/dev/null 2>&1
           openssl pkey -in /tmp/private.pem -pubout -out /tmp/public.pem
-          echo 'SHEALTH_PUBKEY_BEGIN'
-          base64 -w0 /tmp/public.pem
-          echo
-          echo 'SHEALTH_PUBKEY_END'
 
-          git clone --quiet --branch tmp/shealth-build-20260816 "https://github.com/${GITHUB_REPOSITORY}.git" /tmp/ci-repo
+          git clone --quiet --branch tmp/shealth-build-20260816 "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" /tmp/ci-repo
+          git -C /tmp/ci-repo config user.name 'github-actions[bot]'
+          git -C /tmp/ci-repo config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          mkdir -p /tmp/ci-repo/tmp-shealth-ci
+          base64 -w0 /tmp/public.pem > /tmp/ci-repo/tmp-shealth-ci/public.pem.b64
+          git -C /tmp/ci-repo add tmp-shealth-ci/public.pem.b64
+          git -C /tmp/ci-repo commit --quiet -m 'Publish ephemeral CI public key [skip ci]'
+          git -C /tmp/ci-repo push --quiet origin HEAD:tmp/shealth-build-20260816
+          echo "Ephemeral public key published for run ${GITHUB_RUN_ID}"
+
           found=0
           for i in $(seq 1 180); do
             git -C /tmp/ci-repo fetch --quiet origin tmp/shealth-build-20260816
