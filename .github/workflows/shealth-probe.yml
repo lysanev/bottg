@@ -12,24 +12,19 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Probe official Samsung Code Lab packages
+      - name: Probe Maven repositories for Samsung Health Data API 1.1.0
         shell: bash
         run: |
           set -euxo pipefail
-          python3 - <<'PY'
-          import re, requests
-          for url in [
-            'https://developer.samsung.com/codelab/health/sleep-data.html',
-            'https://developer.samsung.com/codelab/health/steps-data.html',
-            'https://developer.samsung.com/health/data/sample/health-diary.html',
-          ]:
-            r=requests.get(url,timeout=30,headers={'User-Agent':'Mozilla/5.0'})
-            print('\nPAGE',url,'STATUS',r.status_code,'LEN',len(r.text),'FINAL',r.url)
-            txt=r.text
-            for pat in [r'href=["\']([^"\']+)["\']', r'src=["\']([^"\']+)["\']']:
-              for x in sorted(set(re.findall(pat,txt,re.I))):
-                if any(k in x.lower() for k in ('.zip','.aar','download','file/','cloudfront','sample','sleep','health')):
-                  print('LINK',x)
-            for m in re.finditer(r'\.zip|\.aar|download|sample code|source code|health data sdk',txt,re.I):
-              print('CTX',re.sub(r'\s+',' ',txt[max(0,m.start()-400):m.end()+800])[:1400])
-          PY
+          for base in \
+            https://repo.maven.apache.org/maven2 \
+            https://repo1.maven.org/maven2 \
+            https://dl.google.com/dl/android/maven2
+          do
+            echo "===== $base ====="
+            meta="$base/com/samsung/health/samsung-health-data-api/maven-metadata.xml"
+            curl -fsSL --max-time 30 "$meta" || true
+            echo
+            aar="$base/com/samsung/health/samsung-health-data-api/1.1.0/samsung-health-data-api-1.1.0.aar"
+            curl -sSIL --max-time 30 "$aar" | sed -n '1,20p' || true
+          done
