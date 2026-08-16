@@ -12,20 +12,24 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Probe Samsung SDK endpoint without accepting license
+      - name: Probe official Samsung Code Lab packages
         shell: bash
         run: |
           set -euxo pipefail
-          base='https://developer.samsung.com'
-          page="$base/health/data/overview.html"
-          endpoint="$base/SHealth/file/f11b8b9d-8bd6-4e9d-9899-3711375a91bf"
-          curl -sSIL --max-redirs 10 -A 'Mozilla/5.0' "$endpoint" || true
           python3 - <<'PY'
-          import requests
-          u='https://developer.samsung.com/SHealth/file/f11b8b9d-8bd6-4e9d-9899-3711375a91bf'
-          r=requests.head(u,allow_redirects=True,timeout=30,headers={'User-Agent':'Mozilla/5.0'})
-          print('HEAD',r.status_code,r.url)
-          for k,v in r.headers.items():
-              if k.lower() in ('content-type','content-length','content-disposition','location'):
-                  print(k, v)
+          import re, requests
+          for url in [
+            'https://developer.samsung.com/codelab/health/sleep-data.html',
+            'https://developer.samsung.com/codelab/health/steps-data.html',
+            'https://developer.samsung.com/health/data/sample/health-diary.html',
+          ]:
+            r=requests.get(url,timeout=30,headers={'User-Agent':'Mozilla/5.0'})
+            print('\nPAGE',url,'STATUS',r.status_code,'LEN',len(r.text),'FINAL',r.url)
+            txt=r.text
+            for pat in [r'href=["\']([^"\']+)["\']', r'src=["\']([^"\']+)["\']']:
+              for x in sorted(set(re.findall(pat,txt,re.I))):
+                if any(k in x.lower() for k in ('.zip','.aar','download','file/','cloudfront','sample','sleep','health')):
+                  print('LINK',x)
+            for m in re.finditer(r'\.zip|\.aar|download|sample code|source code|health data sdk',txt,re.I):
+              print('CTX',re.sub(r'\s+',' ',txt[max(0,m.start()-400):m.end()+800])[:1400])
           PY
