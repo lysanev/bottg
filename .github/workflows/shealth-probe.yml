@@ -1,4 +1,4 @@
-name: Android offline toolchain cache
+name: Split Android offline toolchain
 
 on:
   push:
@@ -8,160 +8,63 @@ on:
       - '.github/workflows/shealth-probe.yml'
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
-  prepare:
+  split:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
-      - name: Prepare Android 36 and Gradle 9.4.1
-        shell: bash
-        run: |
-          set -euxo pipefail
-          export JAVA_HOME="${JAVA_HOME_17_X64}"
-          export PATH="$JAVA_HOME/bin:$PATH"
-          java -version
-          echo "ANDROID_HOME=$ANDROID_HOME"
-
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;36.0.0'
-
-          curl -fL --retry 3 --connect-timeout 20 \
-            https://services.gradle.org/distributions/gradle-9.4.1-bin.zip \
-            -o /tmp/gradle-9.4.1-bin.zip
-          mkdir -p /tmp/gradle
-          unzip -q /tmp/gradle-9.4.1-bin.zip -d /tmp/gradle
-          /tmp/gradle/gradle-9.4.1/bin/gradle --version
-
-      - name: Warm exact project dependencies
-        shell: bash
-        run: |
-          set -euxo pipefail
-          export JAVA_HOME="${JAVA_HOME_17_X64}"
-          export PATH="$JAVA_HOME/bin:$PATH"
-          rm -rf /tmp/dummy
-          mkdir -p /tmp/dummy/app/src/main/java/ru/lysanev/shealthbridge /tmp/dummy/app/libs
-
-          cat > /tmp/dummy/settings.gradle.kts <<'EOF'
-          pluginManagement {
-              repositories { google(); mavenCentral(); gradlePluginPortal() }
-          }
-          dependencyResolutionManagement {
-              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-              repositories { google(); mavenCentral() }
-          }
-          rootProject.name = "SamsungHealthBridgeWarmup"
-          include(":app")
-          EOF
-
-          cat > /tmp/dummy/build.gradle.kts <<'EOF'
-          plugins {
-              id("com.android.application") version "9.1.0" apply false
-          }
-          EOF
-
-          cat > /tmp/dummy/gradle.properties <<'EOF'
-          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
-          android.useAndroidX=true
-          kotlin.code.style=official
-          EOF
-
-          cat > /tmp/dummy/app/build.gradle.kts <<'EOF'
-          plugins { id("com.android.application") }
-          android {
-              namespace = "ru.lysanev.shealthbridge"
-              compileSdk = 36
-              defaultConfig {
-                  applicationId = "ru.lysanev.shealthbridge"
-                  minSdk = 29
-                  targetSdk = 36
-                  versionCode = 4
-                  versionName = "0.4.0"
-              }
-              buildFeatures { buildConfig = true }
-              compileOptions {
-                  sourceCompatibility = JavaVersion.VERSION_17
-                  targetCompatibility = JavaVersion.VERSION_17
-              }
-          }
-          dependencies {
-              implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar"))))
-              implementation("com.google.code.gson:gson:2.13.2")
-              implementation("androidx.core:core-ktx:1.18.0")
-              implementation("androidx.activity:activity-ktx:1.13.0")
-              implementation("androidx.appcompat:appcompat:1.7.1")
-              implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.11.0")
-              implementation("androidx.work:work-runtime-ktx:2.11.2")
-          }
-          EOF
-
-          cat > /tmp/dummy/app/src/main/AndroidManifest.xml <<'EOF'
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-            <application android:theme="@style/AppTheme">
-              <activity android:name=".MainActivity" android:exported="true">
-                <intent-filter>
-                  <action android:name="android.intent.action.MAIN"/>
-                  <category android:name="android.intent.category.LAUNCHER"/>
-                </intent-filter>
-              </activity>
-            </application>
-          </manifest>
-          EOF
-          mkdir -p /tmp/dummy/app/src/main/res/values
-          cat > /tmp/dummy/app/src/main/res/values/styles.xml <<'EOF'
-          <resources><style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar"/></resources>
-          EOF
-          cat > /tmp/dummy/app/src/main/java/ru/lysanev/shealthbridge/MainActivity.java <<'EOF'
-          package ru.lysanev.shealthbridge;
-          public class MainActivity extends android.app.Activity { }
-          EOF
-
-          mkdir -p /tmp/aar /tmp/empty
-          cat > /tmp/aar/AndroidManifest.xml <<'EOF'
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.samsung.android.sdk.health.data"/>
-          EOF
-          jar cf /tmp/aar/classes.jar -C /tmp/empty .
-          (cd /tmp/aar && zip -q /tmp/dummy/app/libs/samsung-health-data-api-1.1.0.aar AndroidManifest.xml classes.jar)
-
-          cd /tmp/dummy
-          /tmp/gradle/gradle-9.4.1/bin/gradle --no-daemon --stacktrace :app:assembleDebug
-          /tmp/gradle/gradle-9.4.1/bin/gradle --no-daemon :app:dependencies --configuration debugCompileClasspath >/tmp/debugCompileClasspath.txt
-          /tmp/gradle/gradle-9.4.1/bin/gradle --no-daemon :app:dependencies --configuration debugRuntimeClasspath >/tmp/debugRuntimeClasspath.txt
-
-      - name: Pack portable offline toolchain
-        shell: bash
-        run: |
-          set -euxo pipefail
-          mkdir -p /tmp/offline-toolchain/gradle /tmp/offline-toolchain/gradle-user-home /tmp/offline-toolchain/android-sdk/platforms /tmp/offline-toolchain/android-sdk/build-tools
-          cp -a /tmp/gradle/gradle-9.4.1 /tmp/offline-toolchain/gradle/
-          cp -a "$HOME/.gradle/caches" /tmp/offline-toolchain/gradle-user-home/
-          cp -a "$HOME/.gradle/native" /tmp/offline-toolchain/gradle-user-home/ 2>/dev/null || true
-          cp -a "$ANDROID_HOME/platforms/android-36" /tmp/offline-toolchain/android-sdk/platforms/
-          cp -a "$ANDROID_HOME/build-tools/36.0.0" /tmp/offline-toolchain/android-sdk/build-tools/
-          cp -a "$ANDROID_HOME/platform-tools" /tmp/offline-toolchain/android-sdk/ 2>/dev/null || true
-          cp -a "$ANDROID_HOME/licenses" /tmp/offline-toolchain/android-sdk/ 2>/dev/null || true
-          cp /tmp/debugCompileClasspath.txt /tmp/offline-toolchain/
-          cp /tmp/debugRuntimeClasspath.txt /tmp/offline-toolchain/
-          cat > /tmp/offline-toolchain/README.txt <<EOF
-          Generated for SamsungHealthBridge offline build
-          Gradle: 9.4.1
-          AGP: 9.1.0
-          Android platform: 36
-          Android build-tools: 36.0.0
-          Java used to warm cache: 17
-          EOF
-          du -sh /tmp/offline-toolchain/* || true
-          cd /tmp
-          tar -czf android-offline-toolchain.tar.gz offline-toolchain
-          ls -lh android-offline-toolchain.tar.gz
-          sha256sum android-offline-toolchain.tar.gz
-
-      - name: Upload offline toolchain
-        uses: actions/upload-artifact@v4
+      - name: Download previously prepared toolchain
+        uses: actions/download-artifact@v4
         with:
           name: android-offline-toolchain
-          path: /tmp/android-offline-toolchain.tar.gz
-          if-no-files-found: error
+          path: /tmp/full
+          run-id: 31971852249
+          github-token: ${{ github.token }}
+
+      - name: Verify and split into connector-sized pieces
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ls -lh /tmp/full/android-offline-toolchain.tar.gz
+          sha256sum /tmp/full/android-offline-toolchain.tar.gz | tee /tmp/toolchain.sha256
+          mkdir -p /tmp/parts
+          split -b 180M -d -a 2 /tmp/full/android-offline-toolchain.tar.gz /tmp/parts/toolchain.part.
+          ls -lh /tmp/parts
+          test -f /tmp/parts/toolchain.part.00
+          test -f /tmp/parts/toolchain.part.01
+          test -f /tmp/parts/toolchain.part.02
+          test ! -f /tmp/parts/toolchain.part.03
+
+      - name: Upload part 00
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-toolchain-part-00
+          path: /tmp/parts/toolchain.part.00
           retention-days: 1
           compression-level: 0
+
+      - name: Upload part 01
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-toolchain-part-01
+          path: /tmp/parts/toolchain.part.01
+          retention-days: 1
+          compression-level: 0
+
+      - name: Upload part 02
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-toolchain-part-02
+          path: /tmp/parts/toolchain.part.02
+          retention-days: 1
+          compression-level: 0
+
+      - name: Upload checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-toolchain-sha256
+          path: /tmp/toolchain.sha256
+          retention-days: 1
