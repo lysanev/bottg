@@ -12,19 +12,13 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Probe Maven repositories for Samsung Health Data API 1.1.0
+      - name: Probe official Samsung CodeLab package
         shell: bash
         run: |
           set -euxo pipefail
-          for base in \
-            https://repo.maven.apache.org/maven2 \
-            https://repo1.maven.org/maven2 \
-            https://dl.google.com/dl/android/maven2
-          do
-            echo "===== $base ====="
-            meta="$base/com/samsung/health/samsung-health-data-api/maven-metadata.xml"
-            curl -fsSL --max-time 30 "$meta" || true
-            echo
-            aar="$base/com/samsung/health/samsung-health-data-api/1.1.0/samsung-health-data-api-1.1.0.aar"
-            curl -sSIL --max-time 30 "$aar" | sed -n '1,20p' || true
-          done
+          url='https://developer.samsung.com/CodeLab/file/e07d84ec-a804-405d-bbc8-3a60c2b1daf6'
+          curl -sSIL -A 'Mozilla/5.0' --max-redirs 10 "$url" | sed -n '1,160p' || true
+          curl -fL -A 'Mozilla/5.0' --max-redirs 10 "$url" -o /tmp/sample.bin || true
+          file /tmp/sample.bin || true
+          ls -lh /tmp/sample.bin || true
+          unzip -l /tmp/sample.bin 2>/dev/null | grep -E 'samsung-health-data-api|SleepDiary/app/libs' || true
