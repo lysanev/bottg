@@ -1,4 +1,4 @@
-name: Samsung Health Bridge encrypted build
+name: Android offline toolchain cache
 
 on:
   push:
@@ -8,72 +8,160 @@ on:
       - '.github/workflows/shealth-probe.yml'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build:
+  prepare:
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    env:
-      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Generate ephemeral key, receive payload, build APK
+      - name: Prepare Android 36 and Gradle 9.4.1
         shell: bash
         run: |
-          set -euo pipefail
-          RUN_DIR="tmp-shealth-ci/${GITHUB_RUN_ID}"
-          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -out /tmp/private.pem >/dev/null 2>&1
-          openssl pkey -in /tmp/private.pem -pubout -out /tmp/public.pem
-
-          git clone --quiet --branch tmp/shealth-build-20260816 "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" /tmp/ci-repo
-          git -C /tmp/ci-repo config user.name 'github-actions[bot]'
-          git -C /tmp/ci-repo config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          mkdir -p "/tmp/ci-repo/${RUN_DIR}"
-          base64 -w0 /tmp/public.pem > "/tmp/ci-repo/${RUN_DIR}/public.pem.b64"
-          git -C /tmp/ci-repo add "${RUN_DIR}/public.pem.b64"
-          git -C /tmp/ci-repo commit --quiet -m 'Publish ephemeral CI public key [skip ci]'
-          git -C /tmp/ci-repo push --quiet origin HEAD:tmp/shealth-build-20260816
-          echo "Ephemeral public key published for run ${GITHUB_RUN_ID}"
-
-          found=0
-          for i in $(seq 1 180); do
-            git -C /tmp/ci-repo fetch --quiet origin tmp/shealth-build-20260816
-            git -C /tmp/ci-repo reset --quiet --hard origin/tmp/shealth-build-20260816
-            if [ -f "/tmp/ci-repo/${RUN_DIR}/key.enc" ] && [ -f "/tmp/ci-repo/${RUN_DIR}/payload.enc" ]; then
-              found=1
-              break
-            fi
-            echo "Waiting for encrypted payload ($i/180)"
-            sleep 5
-          done
-          test "$found" = 1
-
-          openssl pkeyutl -decrypt -inkey /tmp/private.pem \
-            -pkeyopt rsa_padding_mode:oaep \
-            -pkeyopt rsa_oaep_md:sha256 \
-            -pkeyopt rsa_mgf1_md:sha256 \
-            -in "/tmp/ci-repo/${RUN_DIR}/key.enc" -out /tmp/passphrase
-          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
-            -pass file:/tmp/passphrase -in "/tmp/ci-repo/${RUN_DIR}/payload.enc" -out /tmp/payload.zip
-          echo "PAYLOAD_SHA256=$(sha256sum /tmp/payload.zip | awk '{print $1}')"
-          mkdir -p /tmp/project
-          unzip -q /tmp/payload.zip -d /tmp/project
-          rm -f /tmp/private.pem /tmp/passphrase
-
-          cd /tmp/project/android
-          sed -i 's/\r$//' gradlew
-          chmod +x gradlew
+          set -euxo pipefail
           export JAVA_HOME="${JAVA_HOME_17_X64}"
           export PATH="$JAVA_HOME/bin:$PATH"
           java -version
-          ./gradlew --no-daemon --stacktrace assembleDebug
-          cp app/build/outputs/apk/debug/app-debug.apk /tmp/SamsungHealthBridge-0.4.0-debug.apk
-          sha256sum /tmp/SamsungHealthBridge-0.4.0-debug.apk
+          echo "ANDROID_HOME=$ANDROID_HOME"
 
-      - name: Upload APK
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;36.0.0'
+
+          curl -fL --retry 3 --connect-timeout 20 \
+            https://services.gradle.org/distributions/gradle-9.4.1-bin.zip \
+            -o /tmp/gradle-9.4.1-bin.zip
+          mkdir -p /tmp/gradle
+          unzip -q /tmp/gradle-9.4.1-bin.zip -d /tmp/gradle
+          /tmp/gradle/gradle-9.4.1/bin/gradle --version
+
+      - name: Warm exact project dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export JAVA_HOME="${JAVA_HOME_17_X64}"
+          export PATH="$JAVA_HOME/bin:$PATH"
+          rm -rf /tmp/dummy
+          mkdir -p /tmp/dummy/app/src/main/java/ru/lysanev/shealthbridge /tmp/dummy/app/libs
+
+          cat > /tmp/dummy/settings.gradle.kts <<'EOF'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "SamsungHealthBridgeWarmup"
+          include(":app")
+          EOF
+
+          cat > /tmp/dummy/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application") version "9.1.0" apply false
+          }
+          EOF
+
+          cat > /tmp/dummy/gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          kotlin.code.style=official
+          EOF
+
+          cat > /tmp/dummy/app/build.gradle.kts <<'EOF'
+          plugins { id("com.android.application") }
+          android {
+              namespace = "ru.lysanev.shealthbridge"
+              compileSdk = 36
+              defaultConfig {
+                  applicationId = "ru.lysanev.shealthbridge"
+                  minSdk = 29
+                  targetSdk = 36
+                  versionCode = 4
+                  versionName = "0.4.0"
+              }
+              buildFeatures { buildConfig = true }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+          }
+          dependencies {
+              implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar"))))
+              implementation("com.google.code.gson:gson:2.13.2")
+              implementation("androidx.core:core-ktx:1.18.0")
+              implementation("androidx.activity:activity-ktx:1.13.0")
+              implementation("androidx.appcompat:appcompat:1.7.1")
+              implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.11.0")
+              implementation("androidx.work:work-runtime-ktx:2.11.2")
+          }
+          EOF
+
+          cat > /tmp/dummy/app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <application android:theme="@style/AppTheme">
+              <activity android:name=".MainActivity" android:exported="true">
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN"/>
+                  <category android:name="android.intent.category.LAUNCHER"/>
+                </intent-filter>
+              </activity>
+            </application>
+          </manifest>
+          EOF
+          mkdir -p /tmp/dummy/app/src/main/res/values
+          cat > /tmp/dummy/app/src/main/res/values/styles.xml <<'EOF'
+          <resources><style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar"/></resources>
+          EOF
+          cat > /tmp/dummy/app/src/main/java/ru/lysanev/shealthbridge/MainActivity.java <<'EOF'
+          package ru.lysanev.shealthbridge;
+          public class MainActivity extends android.app.Activity { }
+          EOF
+
+          mkdir -p /tmp/aar /tmp/empty
+          cat > /tmp/aar/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.samsung.android.sdk.health.data"/>
+          EOF
+          jar cf /tmp/aar/classes.jar -C /tmp/empty .
+          (cd /tmp/aar && zip -q /tmp/dummy/app/libs/samsung-health-data-api-1.1.0.aar AndroidManifest.xml classes.jar)
+
+          cd /tmp/dummy
+          /tmp/gradle/gradle-9.4.1/bin/gradle --no-daemon --stacktrace :app:assembleDebug
+          /tmp/gradle/gradle-9.4.1/bin/gradle --no-daemon :app:dependencies --configuration debugCompileClasspath >/tmp/debugCompileClasspath.txt
+          /tmp/gradle/gradle-9.4.1/bin/gradle --no-daemon :app:dependencies --configuration debugRuntimeClasspath >/tmp/debugRuntimeClasspath.txt
+
+      - name: Pack portable offline toolchain
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p /tmp/offline-toolchain/gradle /tmp/offline-toolchain/gradle-user-home /tmp/offline-toolchain/android-sdk/platforms /tmp/offline-toolchain/android-sdk/build-tools
+          cp -a /tmp/gradle/gradle-9.4.1 /tmp/offline-toolchain/gradle/
+          cp -a "$HOME/.gradle/caches" /tmp/offline-toolchain/gradle-user-home/
+          cp -a "$HOME/.gradle/native" /tmp/offline-toolchain/gradle-user-home/ 2>/dev/null || true
+          cp -a "$ANDROID_HOME/platforms/android-36" /tmp/offline-toolchain/android-sdk/platforms/
+          cp -a "$ANDROID_HOME/build-tools/36.0.0" /tmp/offline-toolchain/android-sdk/build-tools/
+          cp -a "$ANDROID_HOME/platform-tools" /tmp/offline-toolchain/android-sdk/ 2>/dev/null || true
+          cp -a "$ANDROID_HOME/licenses" /tmp/offline-toolchain/android-sdk/ 2>/dev/null || true
+          cp /tmp/debugCompileClasspath.txt /tmp/offline-toolchain/
+          cp /tmp/debugRuntimeClasspath.txt /tmp/offline-toolchain/
+          cat > /tmp/offline-toolchain/README.txt <<EOF
+          Generated for SamsungHealthBridge offline build
+          Gradle: 9.4.1
+          AGP: 9.1.0
+          Android platform: 36
+          Android build-tools: 36.0.0
+          Java used to warm cache: 17
+          EOF
+          du -sh /tmp/offline-toolchain/* || true
+          cd /tmp
+          tar -czf android-offline-toolchain.tar.gz offline-toolchain
+          ls -lh android-offline-toolchain.tar.gz
+          sha256sum android-offline-toolchain.tar.gz
+
+      - name: Upload offline toolchain
         uses: actions/upload-artifact@v4
         with:
-          name: SamsungHealthBridge-0.4.0-debug
-          path: /tmp/SamsungHealthBridge-0.4.0-debug.apk
+          name: android-offline-toolchain
+          path: /tmp/android-offline-toolchain.tar.gz
           if-no-files-found: error
           retention-days: 1
+          compression-level: 0
