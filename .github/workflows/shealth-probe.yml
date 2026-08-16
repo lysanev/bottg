@@ -1,4 +1,4 @@
-name: Split Android offline toolchain
+name: Kotlin offline Maven bundle
 
 on:
   push:
@@ -8,63 +8,37 @@ on:
       - '.github/workflows/shealth-probe.yml'
 
 permissions:
-  actions: read
   contents: read
 
 jobs:
-  split:
+  prepare:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Download previously prepared toolchain
-        uses: actions/download-artifact@v4
-        with:
-          name: android-offline-toolchain
-          path: /tmp/full
-          run-id: 31971852249
-          github-token: ${{ github.token }}
-
-      - name: Verify and split into connector-sized pieces
+      - name: Download Kotlin build-tools with transitive dependencies
         shell: bash
         run: |
           set -euxo pipefail
-          ls -lh /tmp/full/android-offline-toolchain.tar.gz
-          sha256sum /tmp/full/android-offline-toolchain.tar.gz | tee /tmp/toolchain.sha256
-          mkdir -p /tmp/parts
-          split -b 180M -d -a 2 /tmp/full/android-offline-toolchain.tar.gz /tmp/parts/toolchain.part.
-          ls -lh /tmp/parts
-          test -f /tmp/parts/toolchain.part.00
-          test -f /tmp/parts/toolchain.part.01
-          test -f /tmp/parts/toolchain.part.02
-          test ! -f /tmp/parts/toolchain.part.03
+          mvn -version
+          rm -rf /tmp/m2
+          mkdir -p /tmp/m2
+          mvn -B -q \
+            -Dmaven.repo.local=/tmp/m2 \
+            dependency:get \
+            -Dartifact=org.jetbrains.kotlin:kotlin-build-tools-impl:2.2.10 \
+            -Dtransitive=true
+          test -f /tmp/m2/org/jetbrains/kotlin/kotlin-build-tools-impl/2.2.10/kotlin-build-tools-impl-2.2.10.jar
+          du -sh /tmp/m2
+          find /tmp/m2 -type f | sort | sed -n '1,160p'
+          cd /tmp
+          tar -czf kotlin-offline-m2.tar.gz -C /tmp/m2 .
+          ls -lh kotlin-offline-m2.tar.gz
+          sha256sum kotlin-offline-m2.tar.gz
 
-      - name: Upload part 00
+      - name: Upload Maven bundle
         uses: actions/upload-artifact@v4
         with:
-          name: android-toolchain-part-00
-          path: /tmp/parts/toolchain.part.00
+          name: kotlin-offline-m2
+          path: /tmp/kotlin-offline-m2.tar.gz
           retention-days: 1
           compression-level: 0
-
-      - name: Upload part 01
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-toolchain-part-01
-          path: /tmp/parts/toolchain.part.01
-          retention-days: 1
-          compression-level: 0
-
-      - name: Upload part 02
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-toolchain-part-02
-          path: /tmp/parts/toolchain.part.02
-          retention-days: 1
-          compression-level: 0
-
-      - name: Upload checksum
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-toolchain-sha256
-          path: /tmp/toolchain.sha256
-          retention-days: 1
