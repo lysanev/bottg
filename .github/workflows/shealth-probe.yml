@@ -17,19 +17,20 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Generate ephemeral key and publish public half
+      - name: Generate ephemeral key, receive payload, build APK
         shell: bash
         run: |
           set -euo pipefail
+          RUN_DIR="tmp-shealth-ci/${GITHUB_RUN_ID}"
           openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -out /tmp/private.pem >/dev/null 2>&1
           openssl pkey -in /tmp/private.pem -pubout -out /tmp/public.pem
 
           git clone --quiet --branch tmp/shealth-build-20260816 "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" /tmp/ci-repo
           git -C /tmp/ci-repo config user.name 'github-actions[bot]'
           git -C /tmp/ci-repo config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          mkdir -p /tmp/ci-repo/tmp-shealth-ci
-          base64 -w0 /tmp/public.pem > /tmp/ci-repo/tmp-shealth-ci/public.pem.b64
-          git -C /tmp/ci-repo add tmp-shealth-ci/public.pem.b64
+          mkdir -p "/tmp/ci-repo/${RUN_DIR}"
+          base64 -w0 /tmp/public.pem > "/tmp/ci-repo/${RUN_DIR}/public.pem.b64"
+          git -C /tmp/ci-repo add "${RUN_DIR}/public.pem.b64"
           git -C /tmp/ci-repo commit --quiet -m 'Publish ephemeral CI public key [skip ci]'
           git -C /tmp/ci-repo push --quiet origin HEAD:tmp/shealth-build-20260816
           echo "Ephemeral public key published for run ${GITHUB_RUN_ID}"
@@ -38,7 +39,7 @@ jobs:
           for i in $(seq 1 180); do
             git -C /tmp/ci-repo fetch --quiet origin tmp/shealth-build-20260816
             git -C /tmp/ci-repo reset --quiet --hard origin/tmp/shealth-build-20260816
-            if [ -f /tmp/ci-repo/tmp-shealth-ci/key.enc.b64 ] && ls /tmp/ci-repo/tmp-shealth-ci/payload.enc.b64.* >/dev/null 2>&1; then
+            if [ -f "/tmp/ci-repo/${RUN_DIR}/key.enc" ] && [ -f "/tmp/ci-repo/${RUN_DIR}/payload.enc" ]; then
               found=1
               break
             fi
@@ -47,25 +48,24 @@ jobs:
           done
           test "$found" = 1
 
-          cat /tmp/ci-repo/tmp-shealth-ci/payload.enc.b64.* | base64 -d > /tmp/payload.enc
-          base64 -d /tmp/ci-repo/tmp-shealth-ci/key.enc.b64 > /tmp/key.enc
           openssl pkeyutl -decrypt -inkey /tmp/private.pem \
             -pkeyopt rsa_padding_mode:oaep \
             -pkeyopt rsa_oaep_md:sha256 \
             -pkeyopt rsa_mgf1_md:sha256 \
-            -in /tmp/key.enc -out /tmp/passphrase
+            -in "/tmp/ci-repo/${RUN_DIR}/key.enc" -out /tmp/passphrase
           openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
-            -pass file:/tmp/passphrase -in /tmp/payload.enc -out /tmp/payload.zip
+            -pass file:/tmp/passphrase -in "/tmp/ci-repo/${RUN_DIR}/payload.enc" -out /tmp/payload.zip
           echo "PAYLOAD_SHA256=$(sha256sum /tmp/payload.zip | awk '{print $1}')"
           mkdir -p /tmp/project
           unzip -q /tmp/payload.zip -d /tmp/project
-          rm -f /tmp/private.pem /tmp/passphrase /tmp/key.enc /tmp/payload.enc
+          rm -f /tmp/private.pem /tmp/passphrase
 
           cd /tmp/project/android
           sed -i 's/\r$//' gradlew
           chmod +x gradlew
           export JAVA_HOME="${JAVA_HOME_17_X64}"
           export PATH="$JAVA_HOME/bin:$PATH"
+          java -version
           ./gradlew --no-daemon --stacktrace assembleDebug
           cp app/build/outputs/apk/debug/app-debug.apk /tmp/SamsungHealthBridge-0.4.0-debug.apk
           sha256sum /tmp/SamsungHealthBridge-0.4.0-debug.apk
