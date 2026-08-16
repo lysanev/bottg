@@ -12,24 +12,20 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Probe Samsung Health Data SDK download
+      - name: Probe Samsung SDK endpoint without accepting license
         shell: bash
         run: |
           set -euxo pipefail
+          base='https://developer.samsung.com'
+          page="$base/health/data/overview.html"
+          endpoint="$base/SHealth/file/f11b8b9d-8bd6-4e9d-9899-3711375a91bf"
+          curl -sSIL --max-redirs 10 -A 'Mozilla/5.0' "$endpoint" || true
           python3 - <<'PY'
-          import re, requests
-          url='https://developer.samsung.com/health/data/overview.html'
-          r=requests.get(url,timeout=30,headers={'User-Agent':'Mozilla/5.0'})
-          print('STATUS',r.status_code,'LEN',len(r.text),'FINAL',r.url)
-          open('/tmp/page.html','w',encoding='utf-8').write(r.text)
-          pats=[r'https?://[^\"\'<> ]+', r'[^\"\'<> ]+\.zip(?:\?[^\"\'<> ]*)?', r'[^\"\'<> ]+\.aar(?:\?[^\"\'<> ]*)?']
-          for pat in pats:
-              for x in sorted(set(re.findall(pat,r.text,re.I))):
-                  if any(k in x.lower() for k in ('health','sdk','download','cloudfront','.zip','.aar')):
-                      print('CANDIDATE',x)
-          for m in re.finditer(r'1\.1\.0|Samsung Health Data SDK|download',r.text,re.I):
-              s=max(0,m.start()-700); e=min(len(r.text),m.end()+1200)
-              print('---CONTEXT---')
-              print(r.text[s:e].replace('\n',' ')[:2200])
+          import requests
+          u='https://developer.samsung.com/SHealth/file/f11b8b9d-8bd6-4e9d-9899-3711375a91bf'
+          r=requests.head(u,allow_redirects=True,timeout=30,headers={'User-Agent':'Mozilla/5.0'})
+          print('HEAD',r.status_code,r.url)
+          for k,v in r.headers.items():
+              if k.lower() in ('content-type','content-length','content-disposition','location'):
+                  print(k, v)
           PY
-          grep -Eio 'https?://[^"<> ]+|[^"<> ]+\.(zip|aar)(\?[^"<> ]*)?' /tmp/page.html | grep -Ei 'health|sdk|download|cloudfront|\.zip|\.aar' | sort -u | head -200 || true
